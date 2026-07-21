@@ -107,8 +107,7 @@ agnes-chat-backup/
 ```powershell
 # 方式一：一键安装脚本
 python install_deps.py
-hey_computer的唤醒模型在https://hf-mirror.com/Soulcreek2/speechkit-wakeword-models/resolve/main/hey_computer.onnx
-这两个辅助模型 pip install openwakeword 时会自动安装到 site-packages/openwakeword/resources/models/，需手动替换
+需要的几个onnx已重定向到data下，已附带
 
 # 方式二：手动安装
 pip install flask requests numpy pywin32 openwakeword pyaudio faster-whisper
