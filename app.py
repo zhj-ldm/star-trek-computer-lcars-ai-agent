@@ -61,7 +61,7 @@ SYSTEM_PROMPT = (
     "search_files 支持模糊匹配，关键词给短一点（如'Enterprise'、'报告'）命中率更高。\n"
     "\n"
     "【重要规则 - 必须联网搜索的情况】\n"
-    "1. 当前时间/日期 → 调用 get_current_time；天气 → 调用 get_weather；新闻/股价/汇率/赛事比分等 → 调用 web_search，不要凭训练数据回答。\n"
+    "1. 当前时间/日期 → 调用 get_current_time；天气 → 调用 web_search，query 必须包含城市名（如「郑州 天气预报」）；新闻/股价/汇率/赛事比分等 → 调用 web_search，不要凭训练数据回答。\n"
     "2. 任何你不确定、不知道或知识可能过时的问题 → 必须调用 web_search\n"
     "3. 用户问'XX是什么'、'XX是谁'、'XX是什么意思'等定义/解释类问题 → 必须调用 web_search\n"
     "4. 用户提问模糊或不准确时 → 先搜再答，不要直接说不知道\n"
@@ -375,11 +375,27 @@ def _web_search(query, max_results=5):
     if is_weather and "天气预报" not in query:
         query = query.replace("天气", "天气预报", 1)
 
-    # ── 方案1: Bing（国内直连可用，优先）──
-    try:
+    # ── 搜索引擎调度表（按 config 中 search.order 顺序依次尝试）──
+    def _search_baidu(q, n):
+        res = []
+        from baidusearch.baidusearch import search as baidu_search
+        for r in baidu_search(q, num_results=max(n, 5)):
+            res.append(f"- [{r.get('title','')}]({r.get('url','')})\n  {r.get('abstract','')}")
+        return res
+
+    def _search_ddg(q, n):
+        res = []
+        from ddgs import DDGS
+        ddgs = DDGS(timeout=10)
+        for r in ddgs.text(q, max_results=max(n, 5)):
+            res.append(f"- [{r.get('title','')}]({r.get('href','')})\n  {r.get('body','')}")
+        return res
+
+    def _search_bing(q, n):
+        res = []
         import urllib.parse
-        encoded = urllib.parse.quote(query)
-        bing_url = f"https://www.bing.com/search?q={encoded}&setlang=zh-cn&count={max_results}"
+        encoded = urllib.parse.quote(q)
+        bing_url = f"https://www.bing.com/search?q={encoded}&setlang=zh-cn&count={n}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
             "Accept-Language": "zh-CN,zh;q=0.9",
@@ -388,19 +404,18 @@ def _web_search(query, max_results=5):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(resp.text, "html.parser")
         items = soup.select("li.b_algo")
-        for item in items[:max_results]:
+        for item in items[:n]:
             title_el = item.select_one("h2 a")
             body_el = item.select_one(".b_caption p") or item.select_one(".b_lineclamp2")
             if title_el:
                 title = title_el.get_text(strip=True)
                 href = title_el.get("href", "")
                 body = body_el.get_text(strip=True) if body_el else ""
-                results.append(f"- [{title}]({href})\n  {body}")
-
-        # 天气查询：自动抓取首个天气站点的详细数据
+                res.append(f"- [{title}]({href})\n  {body}")
+        # 天气深度抓取
         WEATHER_SITES = ["msn.cn/weather", "tianqi.com", "weather.com.cn", "nmc.cn",
                          "qweather.com", "weather.gov.cn", "accuweather.com"]
-        if is_weather and results:
+        if is_weather and res:
             top_weather_url = None
             for item in items[:5]:
                 a = item.select_one("h2 a")
@@ -418,7 +433,6 @@ def _web_search(query, max_results=5):
                         tag.decompose()
                     wtext = ws.get_text(separator="\n", strip=True)
                     wlines = [l for l in wtext.split("\n") if l.strip()]
-                    # 只保留包含数字温度/天气的行
                     filtered = []
                     for line in wlines:
                         if len(line) > 80:
@@ -430,19 +444,23 @@ def _web_search(query, max_results=5):
                     else:
                         wdata = "\n".join(wlines[:60])
                     if wdata:
-                        results.append(f"---\n天气详情（自动抓取自天气网站）:\n{wdata}")
+                        res.append(f"---\n天气详情（自动抓取自天气网站）:\n{wdata}")
                 except Exception:
                     pass
-    except Exception:
-        pass
+        return res
 
-    # ── 方案2: DuckDuckGo 兜底（海外网络可用时）──
-    if not results:
+    # ── 按 config 中 search.order 顺序依次尝试各搜索引擎 ──
+    ENGINE_MAP = {"baidu": _search_baidu, "ddgs": _search_ddg, "bing": _search_bing}
+    search_order = CFG.get("search", {}).get("order", ["baidu", "ddgs", "bing"])
+    for engine in search_order:
+        fn = ENGINE_MAP.get(engine)
+        if not fn:
+            continue
         try:
-            from ddgs import DDGS
-            with DDGS(timeout=6) as d:
-                for r in d.text(query, max_results=max(max_results, 1)):
-                    results.append(f"- [{r.get('title','')}]({r.get('href','')})\n  {r.get('body','')}")
+            eng_results = fn(query, max_results)
+            if eng_results:
+                results = eng_results
+                break
         except Exception:
             pass
 
@@ -949,7 +967,8 @@ def api_update_config():
     _deep_update(cfg, data)
     save_config(cfg)
     # 热更新模块级变量
-    global API_BASE, API_KEY, MODEL
+    global API_BASE, API_KEY, MODEL, CFG
+    CFG = cfg
     API_BASE = cfg["api"]["base"]
     API_KEY = cfg["api"]["key"]
     MODEL = cfg["api"]["model"]

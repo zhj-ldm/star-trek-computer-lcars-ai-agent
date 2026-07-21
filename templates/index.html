@@ -943,6 +943,63 @@ input:checked + .theme-slider:before { transform: translateX(24px); background: 
 #toast.show { opacity: 1; }
 body:not(.lcars-theme) #toast { background: #1d1d1f; color: #fff; }
 body.lcars-theme #toast { background: #fc6; color: #000; border-radius: 0; font-weight: bold; text-transform: uppercase; font-size: 12px; }
+
+/* search order drag list */
+.search-order-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.search-order-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  cursor: grab;
+  transition: background 0.12s;
+  user-select: none;
+}
+.search-order-item:active { cursor: grabbing; }
+.search-order-item.dragging { opacity: 0.4; }
+body:not(.lcars-theme) .search-order-item { background: #f5f5f7; border: 1px solid #e5e5ea; }
+body:not(.lcars-theme) .search-order-item:hover { background: #e8e8ed; }
+body.lcars-theme .search-order-item {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 0;
+  color: #fc6;
+}
+body.lcars-theme .search-order-item:hover { background: #222; border-color: #f90; }
+body.lcars-theme .search-order-item.dragging { opacity: 0.4; }
+.search-order-drag {
+  margin-right: 10px;
+  font-size: 16px;
+  color: #aaa;
+  flex-shrink: 0;
+}
+.search-order-index {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 10px;
+  flex-shrink: 0;
+}
+body:not(.lcars-theme) .search-order-index { background: #0071e3; color: #fff; }
+body.lcars-theme .search-order-index { background: #f90; color: #000; }
+.search-order-label { flex: 1; font-size: 14px; }
+body.lcars-theme .search-order-label { text-transform: uppercase; font-weight: bold; font-size: 12px; }
+.search-order-hint {
+  font-size: 12px;
+  margin-top: 4px;
+}
+body:not(.lcars-theme) .search-order-hint { color: #8e8e93; }
+body.lcars-theme .search-order-hint { color: #555; }
 </style>
 </head>
 <body>
@@ -1057,6 +1114,7 @@ body.lcars-theme #toast { background: #fc6; color: #000; border-radius: 0; font-
       <button class="settings-tab" onclick="switchSettingsTab('api', event)">API</button>
       <button class="settings-tab" onclick="switchSettingsTab('wake', event)">WAKE</button>
       <button class="settings-tab" onclick="switchSettingsTab('appearance', event)">UI</button>
+      <button class="settings-tab" onclick="switchSettingsTab('search', event)">搜索引擎</button>
     </div>
     <div class="settings-body">
       <div class="settings-tab-content active" id="tab-tts">
@@ -1125,6 +1183,10 @@ body.lcars-theme #toast { background: #fc6; color: #000; border-radius: 0; font-
         </div>
         <p style="font-size:12px;margin-top:8px;">Star Trek LCARS interface style.</p>
       </div>
+      <div class="settings-tab-content" id="tab-search">
+        <p class="search-order-hint">拖拽调整搜索引擎调用的优先级（排在上面的优先使用）</p>
+        <ul class="search-order-list" id="searchOrderList"></ul>
+      </div>
     </div>
     <div class="settings-footer">
       <button class="btn-secondary" onclick="closeSettings()">Cancel</button>
@@ -1168,6 +1230,9 @@ function toggleTheme() {
 // ══════════════════════════════════════════════
 let currentConvId = null;
 let configCache = null;
+
+// 搜索引擎标签映射
+const ENGINE_LABELS = { baidu: '百度', ddgs: 'DuckDuckGo', bing: 'Bing' };
 
 // ══════════════════════════════════════════════
 // HELPERS
@@ -1492,6 +1557,97 @@ function populateSettings(cfg) {
   document.getElementById('cfg-api-base').value = api.base || '';
   document.getElementById('cfg-api-key').value = api.key || '';
   document.getElementById('cfg-api-model').value = api.model || '';
+
+  // 搜索引擎排序
+  var order = (cfg.search && cfg.search.order) || ['baidu','ddgs','bing'];
+  renderSearchOrder(order);
+}
+
+// ── 搜索引擎拖拽排序 ──
+function renderSearchOrder(order) {
+  var list = document.getElementById('searchOrderList');
+  list.innerHTML = '';
+  order.forEach(function(engine, i) {
+    var li = document.createElement('li');
+    li.className = 'search-order-item';
+    li.draggable = true;
+    li.setAttribute('data-engine', engine);
+    li.innerHTML =
+      '<span class="search-order-drag">::</span>' +
+      '<span class="search-order-index">' + (i + 1) + '</span>' +
+      '<span class="search-order-label">' + (ENGINE_LABELS[engine] || engine) + '</span>';
+    li.addEventListener('dragstart', onDragStart);
+    li.addEventListener('dragover', onDragOver);
+    li.addEventListener('dragenter', onDragEnter);
+    li.addEventListener('dragleave', onDragLeave);
+    li.addEventListener('drop', onDrop);
+    li.addEventListener('dragend', onDragEnd);
+    list.appendChild(li);
+  });
+}
+
+var dragSrc = null;
+
+function onDragStart(e) {
+  dragSrc = this;
+  this.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', this.getAttribute('data-engine'));
+}
+
+function onDragOver(e) {
+  if (e.preventDefault) e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  return false;
+}
+
+function onDragEnter(e) {
+  this.classList.add('over');
+}
+
+function onDragLeave(e) {
+  this.classList.remove('over');
+}
+
+function onDrop(e) {
+  if (e.stopPropagation) e.stopPropagation();
+  if (dragSrc !== this) {
+    var list = document.getElementById('searchOrderList');
+    var items = Array.from(list.querySelectorAll('.search-order-item'));
+    var srcIdx = items.indexOf(dragSrc);
+    var dstIdx = items.indexOf(this);
+    if (srcIdx < dstIdx) {
+      list.insertBefore(dragSrc, this.nextSibling);
+    } else {
+      list.insertBefore(dragSrc, this);
+    }
+    reindexSearchOrder();
+  }
+  this.classList.remove('over');
+  return false;
+}
+
+function onDragEnd(e) {
+  this.classList.remove('dragging');
+  document.querySelectorAll('.search-order-item').forEach(function(item) {
+    item.classList.remove('over');
+  });
+}
+
+function reindexSearchOrder() {
+  var items = document.querySelectorAll('#searchOrderList .search-order-item');
+  items.forEach(function(item, i) {
+    item.querySelector('.search-order-index').textContent = i + 1;
+  });
+}
+
+function getSearchOrder() {
+  var items = document.querySelectorAll('#searchOrderList .search-order-item');
+  var order = [];
+  items.forEach(function(item) {
+    order.push(item.getAttribute('data-engine'));
+  });
+  return order;
 }
 
 async function saveSettings() {
@@ -1516,7 +1672,7 @@ async function saveSettings() {
     var resp = await fetch('/api/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tts: tts, api: api, wake: wake }),
+      body: JSON.stringify({ tts: tts, api: api, wake: wake, search: { order: getSearchOrder() } }),
     });
     var data = await resp.json();
     if (data.ok) { showToast('Saved. Restart voice assistant to apply.'); closeSettings(); }

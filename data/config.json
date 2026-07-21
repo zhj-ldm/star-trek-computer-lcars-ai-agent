@@ -10,20 +10,27 @@
         "password": "9472"
     },
     "api": {
-        "base": "",
+        "base": "https://open.bigmodel.cn/api/paas/v4",
         "key": "",
         "model": ""
     },
     "tts": {
-        "voice": "",
+        "voice": "[OneCore] Microsoft Yaoyao - Chinese (Simplified, PRC)",
         "rate": 2,
         "processing_rate": 1,
         "volume": 100
     },
     "wake": {
-        "threshold": 0.08,
+        "threshold": 0.1,
         "silence_threshold": 350,
         "silence_sec": 3.5,
         "stop_energy_threshold": 1200
+    },
+    "search": {
+        "order": [
+            "baidu",
+            "bing",
+            "ddgs"
+        ]
     }
 }
