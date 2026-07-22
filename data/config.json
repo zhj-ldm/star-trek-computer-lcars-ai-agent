@@ -15,7 +15,7 @@
         "model": ""
     },
     "tts": {
-        "voice": "[OneCore] Microsoft Yaoyao - Chinese (Simplified, PRC)",
+        "voice": "zh-CN-XiaoxiaoNeural",
         "rate": 2,
         "processing_rate": 1,
         "volume": 100

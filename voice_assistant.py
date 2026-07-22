@@ -11,10 +11,15 @@ import wave
 import threading
 import json
 import traceback
+import asyncio
+import tempfile
+import re
 
 import numpy as np
 import pyaudio
 import requests
+import edge_tts
+import pygame
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -30,7 +35,7 @@ CHANNELS = 1
 # ── VAD / 录音 ────────────────────────────────
 SILENCE_THRESHOLD = 400
 SILENCE_SEC = 1.5
-MAX_RECORD_SEC = 15
+MAX_RECORD_SEC = 25
 MIN_RECORD_SEC = 0.5
 SILENCE_FRAMES = int(SILENCE_SEC / CHUNK_DURATION)
 
@@ -152,15 +157,18 @@ SPEED_SET_KW   = ["语速调到", "语速设为", "语速调到", "设置语速"
 VOICE_LIST_KW  = ["切换音色", "换声音", "音色列表", "有什么声音", "有哪些声音"]
 VOICE_SET_KW   = ["切换音色到", "换成音色", "音色设为", "用声音", "切换为音色"]
 
-DEFAULT_RATE = 3
+DEFAULT_RATE = "+0%"
 
-# 可用音色映射（名称关键词 → token 路径）
-VOICE_MAP = {
-    "huihui":   ("慧慧 (中文女声)", None),
-    "kangkang": ("康康 (中文男声)", r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech_OneCore\Voices\Tokens\MSTTS_V110_zhCN_KangkangM"),
-    "yaoyao":   ("瑶瑶 (中文女声)", r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech_OneCore\Voices\Tokens\MSTTS_V110_zhCN_YaoyaoM"),
-    "zira":     ("Zira (英文美式)", None),
-    "hazel":    ("Hazel (英文英式)", None),
+# Edge TTS 中文声音 ShortName → 显示名称映射（动态获取，此为备用）
+FRIENDLY_NAMES = {
+    "zh-CN-XiaoxiaoNeural":         "晓晓 (中文女声)",
+    "zh-CN-XiaoyiNeural":           "晓伊 (中文女声)",
+    "zh-CN-YunjianNeural":          "云健 (中文男声)",
+    "zh-CN-YunxiNeural":            "云希 (中文男声)",
+    "zh-CN-YunxiaNeural":           "云夏 (中文男声)",
+    "zh-CN-YunyangNeural":          "云扬 (中文男声)",
+    "zh-CN-liaoning-XiaobeiNeural": "小北 (东北话女声)",
+    "zh-CN-shaanxi-XiaoniNeural":   "小妮 (陕西话女声)",
 }
 
 
@@ -208,12 +216,20 @@ def match_command(text):
             else:
                 return ("voice_list", None)
 
-    # 快捷音色切换
+    # 快捷音色切换 — Edge TTS 中文声音关键词映射
     name_map = {
-        "康康": "kangkang", "男声": "kangkang", "男音": "kangkang",
-        "慧慧": "huihui",
-        "瑶瑶": "yaoyao",  "女声": "huihui",  "女音": "huihui",
-        "zira": "zira", "hazel": "hazel",
+        "晓晓": "zh-CN-XiaoxiaoNeural",
+        "晓伊": "zh-CN-XiaoyiNeural",
+        "云健": "zh-CN-YunjianNeural",
+        "云希": "zh-CN-YunxiNeural",
+        "云夏": "zh-CN-YunxiaNeural",
+        "云扬": "zh-CN-YunyangNeural",
+        "小北": "zh-CN-liaoning-XiaobeiNeural",
+        "小妮": "zh-CN-shaanxi-XiaoniNeural",
+        "男声": "zh-CN-YunjianNeural",
+        "男音": "zh-CN-YunjianNeural",
+        "女声": "zh-CN-XiaoxiaoNeural",
+        "女音": "zh-CN-XiaoxiaoNeural",
     }
     for kw, vkey in name_map.items():
         if kw in text_stripped:
@@ -279,7 +295,6 @@ def handle_command(cmd_type, payload, current_conv_id):
 
 def _clean_for_tts(text):
     """去掉 Markdown 和特殊符号，只保留 TTS 可朗读的纯文字"""
-    import re
     # 去掉图片语法 ![alt](url)
     text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
     # 去掉链接语法 [text](url)，保留链接文字
@@ -321,75 +336,60 @@ def send_to_ai(conv_id, text):
 
 
 # ═══════════════════════════════════════════════
-#  语音助手
+#  Edge TTS 工具函数
 # ═══════════════════════════════════════════════
 
-ONE_CORE_TOKEN_BASE = r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech_OneCore\Voices\Tokens"
-
-
-def _get_all_sapi_voices():
-    """返回所有可用 SAPI 语音的 (description, token_path_or_None) 列表。
-    OneCore 语音带 token 路径，桌面语音 token 为 None。"""
+def _get_edge_voices_sync():
+    """同步获取所有 Edge TTS 中文（zh-CN）声音列表。
+    返回 [{"short_name": "zh-CN-XiaoxiaoNeural", "display_name": "晓晓 (中文女声)", "gender": "Female"}, ...]"""
     voices = []
-    # Desktop 语音
-    try:
-        from win32com.client import Dispatch
-        t = Dispatch("SAPI.SpVoice")
-        for v in t.GetVoices():
-            voices.append((v.GetDescription(), None))
-    except Exception:
-        pass
 
-    # OneCore 语音（需通过 SetId 设置，不在 GetVoices 中）
+    async def _fetch():
+        all_voices = await edge_tts.list_voices()
+        for v in all_voices:
+            if v["Locale"].startswith("zh-CN"):
+                sn = v["ShortName"]
+                voices.append({
+                    "short_name": sn,
+                    "display_name": FRIENDLY_NAMES.get(sn, v.get("FriendlyName", sn)),
+                    "gender": v["Gender"],
+                })
+
     try:
-        import winreg
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                             r"SOFTWARE\Microsoft\Speech_OneCore\Voices\Tokens")
-        i = 0
-        while True:
-            try:
-                sub = winreg.EnumKey(key, i)
-                tk = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                    rf"SOFTWARE\Microsoft\Speech_OneCore\Voices\Tokens\{sub}")
-                name = winreg.QueryValueEx(tk, "")[0]
-                voices.append((name, sub))
-                winreg.CloseKey(tk)
-                i += 1
-            except OSError:
-                break
-        winreg.CloseKey(key)
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # 在已运行的事件循环中
+            import concurrent.futures
+            future = concurrent.futures.Future()
+            def _run():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                new_loop.run_until_complete(_fetch())
+                new_loop.close()
+                future.set_result(None)
+            threading.Thread(target=_run, daemon=True).start()
+            future.result(timeout=15)
+        else:
+            loop.run_until_complete(_fetch())
+    except RuntimeError:
+        asyncio.run(_fetch())
     except Exception:
-        pass
+        # 备用：返回内置列表
+        for sn, name in FRIENDLY_NAMES.items():
+            gender = "Female" if "Xiao" in sn and "Yun" not in sn else "Male"
+            voices.append({"short_name": sn, "display_name": name, "gender": gender})
 
     return voices
 
 
-def _set_sapi_voice(tts, voice_name):
-    """根据名称设置 SAPI 语音（自动区分桌面 / OneCore）。
-    返回更新后的 tts 对象。"""
-    from win32com.client import Dispatch
-
-    for desc, token in _get_all_sapi_voices():
-        if desc in voice_name:
-            if token:
-                # OneCore 语音：通过 token ID 设置
-                tts.Voice = Dispatch("SAPI.SpObjectToken")
-                tts.Voice.SetId(f"{ONE_CORE_TOKEN_BASE}\\{token}")
-            else:
-                # 桌面语音：通过 GetVoices 匹配
-                for v in tts.GetVoices():
-                    if voice_name in v.GetDescription():
-                        tts.Voice = v
-                        break
-            return tts
-
-    # Fallback：Huihui 桌面版
-    print(f"[TTS] 未找到音色 '{voice_name}'，使用 Huihui 桌面版")
-    for v in tts.GetVoices():
-        if "Huihui" in v.GetDescription():
-            tts.Voice = v
-            break
-    return tts
+def _sapi_rate_to_edge(rate):
+    """将 SAPI 语速 (-10~10) 映射为 Edge TTS 百分比格式"""
+    rate = max(-10, min(10, int(rate)))
+    pct = int(rate * 5)  # -10→-50%, 0→0%, 10→+50%
+    if pct >= 0:
+        return f"+{pct}%"
+    else:
+        return f"{pct}%"
 
 
 class VoiceAssistant:
@@ -402,6 +402,12 @@ class VoiceAssistant:
         self.speaking = False       # TTS 朗读期间暂停唤醒词检测
         self.tts_active = False     # TTS 后台线程是否在播
         self.tts_stop_flag = False  # 语音打断标志
+
+        # Edge TTS 声音列表
+        self.edge_voices = []
+        self.current_voice = "zh-CN-XiaoxiaoNeural"
+        self.current_rate = "+0%"
+        self.processing_rate = "+0%"
 
         # 从配置文件读取阈值
         try:
@@ -429,27 +435,38 @@ class VoiceAssistant:
                                 num_workers=2, cpu_threads=4)
         print("[模型] ASR 就绪")
 
-        print("[模型] 加载 TTS 引擎 (Windows SAPI) ...")
-        from win32com.client import Dispatch
-        self.tts = Dispatch("SAPI.SpVoice")
+        print("[模型] 加载 TTS 引擎 (Edge TTS) ...")
+        # 初始化 pygame mixer（用于播放 mp3）
+        try:
+            pygame.mixer.init()
+        except Exception:
+            pass
+
+        # 获取所有 Edge TTS 中文声音
+        self.edge_voices = _get_edge_voices_sync()
+        if not self.edge_voices:
+            # 兜底
+            for sn, name in FRIENDLY_NAMES.items():
+                gender = "Female" if "Xiao" in sn and "Yun" not in sn else "Male"
+                self.edge_voices.append({"short_name": sn, "display_name": name, "gender": gender})
+        print(f"[模型] Edge TTS 可用中文声音: {len(self.edge_voices)} 个")
 
         # 从配置文件读取 TTS 设置
         try:
             cfg = load_config()
             tts_cfg = cfg.get("tts", {})
-            voice_name = tts_cfg.get("voice", "Microsoft Huihui Desktop")
-            self.tts.Rate = tts_cfg.get("rate", 3)
-            self.tts.Volume = tts_cfg.get("volume", 100)
-            self.processing_rate = tts_cfg.get("processing_rate", 1)
+            voice_setting = tts_cfg.get("voice", "zh-CN-XiaoxiaoNeural")
+            rate_raw = tts_cfg.get("rate", 2)
+            self.current_rate = _sapi_rate_to_edge(rate_raw)
+            self.processing_rate = _sapi_rate_to_edge(tts_cfg.get("processing_rate", 1))
         except Exception:
-            voice_name = "Microsoft Huihui Desktop"
-            self.tts.Rate = 3
-            self.tts.Volume = 100
-            self.processing_rate = 1
+            voice_setting = "zh-CN-XiaoxiaoNeural"
+            self.current_rate = "+0%"
+            self.processing_rate = "+0%"
 
-        # 匹配语音（支持 OneCore）
-        self.tts = _set_sapi_voice(self.tts, voice_name)
-        print(f"[模型] TTS 就绪 — {self.tts.Voice.GetDescription()}, Rate={self.tts.Rate}")
+        # 匹配当前音色
+        self._set_voice(voice_setting)
+        print(f"[模型] TTS 就绪 — {self.current_voice}, Rate={self.current_rate}")
 
     def speak(self, text):
         """后台异步朗读，不阻塞主循环（通过 self.tts_stop_flag 支持语音打断）"""
@@ -457,48 +474,54 @@ class VoiceAssistant:
         if not text or not text.strip():
             return
 
+        # 极短纯符号跳过
+        clean = text.strip().replace(" ", "").replace("\n", "")
+        if len(clean) <= 1 and not any('\u4e00' <= c <= '\u9fff' for c in clean):
+            return
+
         self.tts_stop_flag = False
         self.tts_active = True
 
-        def _speak_worker():
-            import pythoncom
-            pythoncom.CoInitialize()
+        voice = self.current_voice
+        rate = self.current_rate
+
+        def _tts_thread():
+            tmp_path = None
             stopped = False
             try:
-                # SVSFlagsAsync = 1: 异步朗读
-                self.tts.Speak(text, 1)
-                t0 = time.time()
-                while not self.tts_stop_flag:
-                    pythoncom.PumpWaitingMessages()
+                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
+                    tmp_path = f.name
+
+                # 异步合成
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                communicate = edge_tts.Communicate(text, voice, rate=rate)
+                loop.run_until_complete(communicate.save(tmp_path))
+                loop.close()
+
+                # 播放 mp3（支持打断）
+                pygame.mixer.music.load(tmp_path)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    if self.tts_stop_flag:
+                        pygame.mixer.music.stop()
+                        stopped = True
+                        print("[TTS] 已被语音打断")
+                        break
                     time.sleep(0.05)
-                    try:
-                        if self.tts.Status.RunningState == 0:
-                            self.tts_stop_flag = False
-                            break
-                    except Exception:
-                        break
-                    # 2秒强制退出，回到监听
-                    if time.time() - t0 > 5.0:
-                        try:
-                            rs = self.tts.Status.RunningState
-                        except:
-                            rs = "?"
-                        print(f"[TTS] 超时退出（RunningState={rs}，已等2s）")
-                        break
-                if self.tts_stop_flag:
-                    self.tts.Skip("Sentence", 2 ** 31 - 1)
-                    self.tts.Speak("", 3)  # SVSFPurgeBeforeSpeak
-                    stopped = True
-                    print("[TTS] 已被语音打断")
             except Exception as e:
                 print(f"[TTS错误] {e}")
             finally:
-                pythoncom.CoUninitialize()
                 self.tts_active = False
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
                 if not stopped:
                     time.sleep(0.5)  # 正常播完后回声消散
 
-        self.tts_thread = threading.Thread(target=_speak_worker, daemon=True)
+        self.tts_thread = threading.Thread(target=_tts_thread, daemon=True)
         self.tts_thread.start()
 
     def wait_speak(self):
@@ -509,15 +532,16 @@ class VoiceAssistant:
 
     def _speak_processing(self):
         """以独立语速朗读 Processing 提示，不随 AI 回复语速变化"""
-        saved = self.tts.Rate
+        saved_rate = self.current_rate
         try:
-            self.tts.Rate = self.processing_rate
-            self.tts.Speak("Processing", 0)
-            time.sleep(0.5)
+            self.current_rate = self.processing_rate
+            # 用同步方式朗读短文本
+            self.speak("Processing")
+            self.wait_speak()
         except Exception as e:
             print(f"[TTS错误] {e}")
         finally:
-            self.tts.Rate = saved
+            self.current_rate = saved_rate
 
     def record_until_silence(self):
         """
@@ -577,43 +601,60 @@ class VoiceAssistant:
         text = " ".join(s.text.strip() for s in segments).strip()
         return text if text else None
 
-    def _set_voice(self, name):
-        """切换音色，返回描述文本"""
-        vkey = name.lower().strip()
-        if vkey not in VOICE_MAP:
-            available = "、".join(f"{v[0]}" for v in VOICE_MAP.values())
-            return f"未找到音色「{name}」。可用音色：{available}"
+    def _set_voice(self, voice_id):
+        """切换音色（Edge TTS ShortName），返回描述文本"""
+        voice_id = voice_id.strip()
+        # 直接在 edge_voices 中匹配
+        for v in self.edge_voices:
+            if v["short_name"] == voice_id:
+                self.current_voice = voice_id
+                return f"已切换到{v['display_name']}"
 
-        desc, token_path = VOICE_MAP[vkey]
-        if token_path is None:
-            # 桌面语音，用描述名称匹配
-            for voice in self.tts.GetVoices():
-                if vkey in voice.GetDescription().lower():
-                    self.tts.Voice = voice
-                    return f"已切换到{desc}"
-            return f"未找到桌面音色 {desc}"
-        else:
-            # OneCore 语音，用 token 路径
-            from win32com.client import Dispatch
-            token = Dispatch("SAPI.SpObjectToken")
-            token.SetId(token_path)
-            self.tts.Voice = token
-            return f"已切换到{desc}"
+        # 兼容旧格式：尝试在 FRIENDLY_NAMES 中匹配
+        if voice_id in FRIENDLY_NAMES:
+            sn = voice_id
+            display = FRIENDLY_NAMES[sn]
+            self.current_voice = sn
+            return f"已切换到{display}"
 
-    def _set_rate(self, rate):
-        """设置语速 (-10 ~ 10)，返回描述文本"""
-        rate = max(-10, min(10, int(rate)))
-        self.tts.Rate = rate
-        return f"语速已设为 {rate}"
+        # 显示名模糊匹配
+        for v in self.edge_voices:
+            if voice_id in v["display_name"]:
+                self.current_voice = v["short_name"]
+                return f"已切换到{v['display_name']}"
+
+        # 未找到
+        available = "、".join(v["display_name"] for v in self.edge_voices[:5])
+        return f"未找到音色「{voice_id}」。可用：{available}等"
+
+    def _set_rate(self, rate_val):
+        """设置语速（Edge TTS 百分比格式或 SAPI -10~10 兼容），返回描述文本"""
+        if isinstance(rate_val, str) and "%" in rate_val:
+            self.current_rate = rate_val
+            return f"语速已设为 {rate_val}"
+        # 兼容旧的数字输入
+        rate_int = max(-10, min(10, int(rate_val)))
+        edge_rate = _sapi_rate_to_edge(rate_int)
+        self.current_rate = edge_rate
+        return f"语速已设为 {edge_rate}（原值 {rate_int}）"
 
     def _handle_tts_command(self, cmd_type, payload):
         """处理语速/音色命令，返回 (speak_text, is_command)"""
         if cmd_type == "speed_up":
-            new_rate = self.tts.Rate + 2
+            # 提升 10%
+            current_pct = int(self.current_rate.replace("%", "").replace("+", ""))
+            new_pct = current_pct + 10
+            new_rate = f"+{new_pct}%"
             return (self._set_rate(new_rate), True)
 
         elif cmd_type == "speed_down":
-            new_rate = self.tts.Rate - 2
+            # 降低 10%
+            current_pct = int(self.current_rate.replace("%", "").replace("+", ""))
+            new_pct = max(-50, current_pct - 10)
+            if new_pct >= 0:
+                new_rate = f"+{new_pct}%"
+            else:
+                new_rate = f"{new_pct}%"
             return (self._set_rate(new_rate), True)
 
         elif cmd_type == "speed_reset":
@@ -627,15 +668,11 @@ class VoiceAssistant:
 
         elif cmd_type == "voice_list":
             lines = ["可用音色："]
-            for vkey, (desc, _) in VOICE_MAP.items():
+            for v in self.edge_voices:
                 marker = ""
-                try:
-                    cur_desc = self.tts.Voice.GetDescription().lower()
-                    if vkey in cur_desc:
-                        marker = " ← 当前"
-                except:
-                    pass
-                lines.append(f"  {desc}{marker}")
+                if v["short_name"] == self.current_voice:
+                    marker = " ← 当前"
+                lines.append(f"  {v['display_name']}{marker}")
             return ("\n".join(lines), True)
 
         elif cmd_type == "voice_set":
@@ -644,33 +681,36 @@ class VoiceAssistant:
         return (None, False)
 
     def _reload_tts_from_config(self):
-        """从 config.json 重新加载并应用 TTS 设置（语音/语速/音量）"""
+        """从 config.json 重新加载并应用 TTS 设置（语音/语速）"""
         try:
             cfg = load_config()
             tts_cfg = cfg.get("tts", {})
-            voice_name = tts_cfg.get("voice", "huihui")
-            self.tts.Rate = tts_cfg.get("rate", 3)
-            self.tts.Volume = tts_cfg.get("volume", 100)
-            self.processing_rate = tts_cfg.get("processing_rate", 1)
+            voice_setting = tts_cfg.get("voice", "zh-CN-XiaoxiaoNeural")
+            rate_raw = tts_cfg.get("rate", 2)
+            self.current_rate = _sapi_rate_to_edge(rate_raw)
+            self.processing_rate = _sapi_rate_to_edge(tts_cfg.get("processing_rate", 1))
 
-            # 支持短键（huihui/kangkang/yaoyao）和全名两种格式
-            voice_lower = voice_name.lower()
-            if voice_lower in VOICE_MAP:
-                # 短键：直接用 VOICE_MAP 设置
-                desc, token_path = VOICE_MAP[voice_lower]
-                if token_path is None:
-                    for v in self.tts.GetVoices():
-                        if voice_lower in v.GetDescription().lower():
-                            self.tts.Voice = v
-                            break
+            # 尝试匹配
+            found = False
+            for v in self.edge_voices:
+                if v["short_name"] == voice_setting:
+                    self.current_voice = voice_setting
+                    found = True
+                    break
+
+            if not found:
+                # 兼容旧格式
+                if voice_setting in FRIENDLY_NAMES:
+                    self.current_voice = voice_setting
                 else:
-                    from win32com.client import Dispatch
-                    token = Dispatch("SAPI.SpObjectToken")
-                    token.SetId(token_path)
-                    self.tts.Voice = token
-            else:
-                # 全名：走原有 _set_sapi_voice 路径
-                self.tts = _set_sapi_voice(self.tts, voice_name)
+                    # 尝试显示名模糊匹配
+                    for v in self.edge_voices:
+                        if voice_setting in v["display_name"]:
+                            self.current_voice = v["short_name"]
+                            found = True
+                            break
+                    if not found:
+                        print(f"[TTS] 未找到音色 '{voice_setting}'，保持当前")
         except Exception:
             pass
 

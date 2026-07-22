@@ -332,19 +332,20 @@ function populateSettings(cfg) {
   document.getElementById('cfg-stop-threshold').value = wake.stop_energy_threshold != null ? wake.stop_energy_threshold : 1200;
   document.getElementById('stop-threshold-val').textContent = wake.stop_energy_threshold != null ? wake.stop_energy_threshold : 1200;
 
-  fetch('/api/voices').then(function(r){ return r.json(); }).then(function(voices){
+  fetch('/api/voices').then(function(r){ return r.json(); }).then(function(data){
+    var voices = data.voices || [];
     var sel = document.getElementById('cfg-voice');
     sel.innerHTML = '';
     var selectedIdx = 0;
     voices.forEach(function(v, i){
       var opt = document.createElement('option');
-      opt.value = v; opt.textContent = v;
+      opt.value = v.id; opt.textContent = v.name;
       sel.appendChild(opt);
-      if (tts.voice && v === tts.voice) selectedIdx = i;
+      if (tts.voice && v.id === tts.voice) selectedIdx = i;
     });
     sel.selectedIndex = selectedIdx;
   }).catch(function(){
-    document.getElementById('cfg-voice').innerHTML = '<option>Microsoft Huihui Desktop</option>';
+    document.getElementById('cfg-voice').innerHTML = '<option value="zh-CN-XiaoyiNeural">晓伊 (中文女声)</option>';
   });
 
   var api = cfg.api || {};

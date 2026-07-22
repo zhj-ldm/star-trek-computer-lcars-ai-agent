@@ -5,6 +5,8 @@ import sys
 import subprocess
 import uuid
 import time
+import asyncio
+import threading
 from datetime import datetime
 import requests
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
@@ -76,6 +78,61 @@ SYSTEM_PROMPT = (
     "5. 拿到工具结果后，请直接总结要点回答用户，不要追加废话\n"
     "6. 【强制】web_search 返回的结果就是答案来源，必须根据返回内容回答，严禁说「找不到」「不知道」或「无法获取」。只要工具返回了内容（哪怕是一条），你就必须总结回答。只有工具返回为空字符串时才能说搜不到。"
 )
+
+# ── Edge TTS 声音动态获取 ─────────────────────────────────
+
+FRIENDLY_NAMES = {
+    "zh-CN-XiaoxiaoNeural":         "晓晓 (中文女声)",
+    "zh-CN-XiaoyiNeural":           "晓伊 (中文女声)",
+    "zh-CN-YunjianNeural":          "云健 (中文男声)",
+    "zh-CN-YunxiNeural":            "云希 (中文男声)",
+    "zh-CN-YunxiaNeural":           "云夏 (中文男声)",
+    "zh-CN-YunyangNeural":          "云扬 (中文男声)",
+    "zh-CN-liaoning-XiaobeiNeural": "小北 (东北话女声)",
+    "zh-CN-shaanxi-XiaoniNeural":   "小妮 (陕西话女声)",
+}
+
+def _get_edge_voices_sync():
+    """同步获取所有 Edge TTS 中文（zh-CN）声音列表。
+    返回 [{"id": "zh-CN-...", "name": "晓晓 (中文女声)", "gender": "Female"}, ...]"""
+    voices = []
+
+    async def _fetch():
+        import edge_tts
+        all_voices = await edge_tts.list_voices()
+        for v in all_voices:
+            if v["Locale"].startswith("zh-CN"):
+                sn = v["ShortName"]
+                voices.append({
+                    "id": sn,
+                    "name": FRIENDLY_NAMES.get(sn, v.get("FriendlyName", sn)),
+                    "gender": v["Gender"],
+                })
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            future = concurrent.futures.Future()
+            def _run():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                new_loop.run_until_complete(_fetch())
+                new_loop.close()
+                future.set_result(None)
+            threading.Thread(target=_run, daemon=True).start()
+            future.result(timeout=15)
+        else:
+            loop.run_until_complete(_fetch())
+    except RuntimeError:
+        asyncio.run(_fetch())
+    except Exception:
+        for sn, name in FRIENDLY_NAMES.items():
+            gender = "Female" if "Xiao" in sn and "Yun" not in sn else "Male"
+            voices.append({"id": sn, "name": name, "gender": gender})
+
+    return voices
+
 
 # ── 工具定义 ──────────────────────────────────────────────
 
@@ -183,7 +240,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "set_voice_rate",
-            "description": "设置 TTS 朗读语速。用户说'读快点/慢点/语速调到X'时调用。",
+            "description": "设置 TTS 朗读语速。用户说'读快点/慢点/语速调到X'时调用。语速值 -10~10，0=正常，正数=快，负数=慢，映射为 Edge TTS 百分比。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -197,11 +254,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "set_voice",
-            "description": "切换 TTS 音色。可用音色：huihui(慧慧)/kangkang(康康)/yaoyao(瑶瑶)/zira(Zira英文)/hazel(Hazel英文)。",
+            "description": "切换 TTS 音色。可用音色 ShortName：zh-CN-XiaoxiaoNeural(晓晓女声)/zh-CN-XiaoyiNeural(晓伊女声)/zh-CN-YunjianNeural(云健男声)/zh-CN-YunxiNeural(云希男声)/zh-CN-YunxiaNeural(云夏男声)/zh-CN-YunyangNeural(云扬男声)/zh-CN-liaoning-XiaobeiNeural(小北东北话)/zh-CN-shaanxi-XiaoniNeural(小妮陕西话)。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "voice": {"type": "string", "description": "音色名称，如 huihui, kangkang, yaoyao"},
+                    "voice": {"type": "string", "description": "音色 ShortName，如 zh-CN-XiaoxiaoNeural"},
                 },
                 "required": ["voice"],
             },
@@ -557,14 +614,6 @@ def _pending_action(action):
 
 # ── TTS 控制执行器 ──
 
-VOICES_INFO = {
-    "huihui":  {"name": "慧慧", "lang": "中文女声", "token": "MSTTS_V110_zhCN_HuihuiM"},
-    "kangkang":{"name": "康康", "lang": "中文男声", "token": "MSTTS_V110_zhCN_KangkangM"},
-    "yaoyao":  {"name": "瑶瑶", "lang": "中文女声", "token": "MSTTS_V110_zhCN_YaoyaoM"},
-    "zira":    {"name": "Zira",  "lang": "英文女声", "token": "MSTTS_V110_enUS_ZiraM"},
-    "hazel":   {"name": "Hazel", "lang": "英文女声", "token": "MSTTS_V110_enGB_HazelM"},
-}
-
 def _set_voice_rate(rate):
     rate = max(-10, min(10, int(rate)))
     cfg = load_config()
@@ -573,26 +622,41 @@ def _set_voice_rate(rate):
     global CFG
     CFG = cfg
     _pending_action({"type": "set_rate", "value": rate})
-    return f"语速已设为 {rate}（-10~10，当前音色 {cfg['tts'].get('voice','huihui')}）"
+    return f"语速已设为 {rate}（映射为 Edge TTS 百分比，当前音色 {cfg['tts'].get('voice','zh-CN-XiaoxiaoNeural')}）"
 
 def _set_voice(voice):
-    voice = voice.strip().lower()
-    if voice not in VOICES_INFO:
-        names = ", ".join(f"{k}({v['name']})" for k, v in VOICES_INFO.items())
-        return f"未知音色: {voice}。可用: {names}"
+    voice = voice.strip()
+    voices = _get_edge_voices_sync()
+    # 查找匹配
+    matched = None
+    for v in voices:
+        if v["id"] == voice:
+            matched = v
+            break
+    if not matched:
+        # 显示名模糊匹配
+        for v in voices:
+            if voice in v["name"]:
+                matched = v
+                break
+    if not matched:
+        names = ", ".join(f"{v['id']}({v['name']})" for v in voices[:5])
+        return f"未知音色: {voice}。建议使用: {names}"
+
     cfg = load_config()
-    cfg["tts"]["voice"] = voice
+    cfg["tts"]["voice"] = matched["id"]
     save_config(cfg)
     global CFG
     CFG = cfg
-    _pending_action({"type": "set_voice", "value": voice})
-    return f"音色已切换为 {VOICES_INFO[voice]['name']}（{VOICES_INFO[voice]['lang']}）"
+    _pending_action({"type": "set_voice", "value": matched["id"]})
+    return f"音色已切换为 {matched['name']}（{matched['gender']}）"
 
 def _list_voices():
+    voices = _get_edge_voices_sync()
     lines = []
-    for k, v in VOICES_INFO.items():
-        lines.append(f"- {k}: {v['name']} ({v['lang']})")
-    return "可用音色:\n" + "\n".join(lines)
+    for v in voices:
+        lines.append(f"- {v['id']}: {v['name']} ({v['gender']})")
+    return "可用 Edge TTS 中文音色:\n" + "\n".join(lines)
 
 # ── 对话管理执行器 ──
 
@@ -983,35 +1047,17 @@ def _deep_update(d, u):
 
 @app.route("/api/voices", methods=["GET"])
 def api_list_voices():
+    """返回所有可用的 Edge TTS 中文声音"""
     try:
-        from win32com.client import Dispatch
-        tts = Dispatch("SAPI.SpVoice")
-        voices = [v.GetDescription() for v in tts.GetVoices()]
-
-        # OneCore 语音
-        try:
-            import winreg
-            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                 r"SOFTWARE\Microsoft\Speech_OneCore\Voices\Tokens")
-            i = 0
-            while True:
-                try:
-                    sub = winreg.EnumKey(key, i)
-                    tk = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                        rf"SOFTWARE\Microsoft\Speech_OneCore\Voices\Tokens\{sub}")
-                    name = winreg.QueryValueEx(tk, "")[0]
-                    voices.append(f"[OneCore] {name}")
-                    winreg.CloseKey(tk)
-                    i += 1
-                except OSError:
-                    break
-            winreg.CloseKey(key)
-        except Exception:
-            pass
-
-        return jsonify(voices)
+        voices = _get_edge_voices_sync()
+        return jsonify({"voices": voices})
     except Exception as e:
-        return jsonify([])
+        # 降级返回内置列表
+        fallback = []
+        for sn, name in FRIENDLY_NAMES.items():
+            gender = "Female" if "Xiao" in sn and "Yun" not in sn else "Male"
+            fallback.append({"id": sn, "name": name, "gender": gender})
+        return jsonify({"voices": fallback})
 
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
