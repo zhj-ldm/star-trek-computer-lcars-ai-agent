@@ -14,10 +14,11 @@ DEPS = [
     ("flask",           "flask"),
     ("requests",        "requests"),
     ("numpy",           "numpy"),
-    ("pywin32",         "win32com"),
     ("openwakeword",    "openwakeword"),
     ("pyaudio",         "pyaudio"),
     ("faster-whisper",  "faster_whisper"),
+    ("edge-tts",        "edge_tts"),
+    ("pygame",          "pygame"),
 ]
 
 
