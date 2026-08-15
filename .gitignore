@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# 运行时数据
+对话/
+__pycache__/
+*.pyc
+
+# 虚拟环境
+.venv/
+venv/
+env/
+agentscope-env/

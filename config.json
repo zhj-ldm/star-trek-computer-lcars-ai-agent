@@ -1,0 +1,20 @@
+{
+  "api_key": "",
+  "model": "",
+  "base_url": "",
+  "wakeword": "computer",
+  "wakeword_model_path": "computer_v2.onnx",
+  "wakeword_threshold": 0.15,
+  "tts_voice": null,
+  "audio": {
+    "silence_threshold": 400.0,
+    "silence_sec": 1.5,
+    "max_record_sec": 25.0,
+    "min_record_sec": 0.5
+  },
+  "memory": {
+    "recent_keep": 6,
+    "summary_trigger": 12,
+    "retrieve_top": 3
+  }
+}
