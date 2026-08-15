@@ -1,15 +1,5 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: abc280594deb8e830e487cdb027f0632_287ece0898b111f18cca525400e6dd8f
-    ReservedCode1: ZqvaQuCueiJhqLCkTJDHuCwvgLfMkM0HM2eE2tzSnh1Z0D/fGfg4FqNQ7Mnl5LJFAX1sgQPkNZAiCujCxPfXkiccfWExBSl3L+D2e25HQl7VLPi1SQB3uMJfIoSPJpl7Bj1Fm51TsfdoJT8MST2z062h0zTppgQFMN8d2cxTUgtmdWFkyn+XzaDV1Xk=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: abc280594deb8e830e487cdb027f0632_287ece0898b111f18cca525400e6dd8f
-    ReservedCode2: ZqvaQuCueiJhqLCkTJDHuCwvgLfMkM0HM2eE2tzSnh1Z0D/fGfg4FqNQ7Mnl5LJFAX1sgQPkNZAiCujCxPfXkiccfWExBSl3L+D2e25HQl7VLPi1SQB3uMJfIoSPJpl7Bj1Fm51TsfdoJT8MST2z062h0zTppgQFMN8d2cxTUgtmdWFkyn+XzaDV1Xk=
----
 
-# Star Trek Computer 项目架构介绍
+# Star Trek Computerv2.0 项目架构介绍
 
 > 星际迷航风格本地语音助手：唤醒即对话，支持联网搜索、文件操作、终端命令与 Web 管理界面。
 
@@ -320,4 +310,3 @@ python voice_assistant.py --debug
 - AI agent 增加 **MQTT 工具**，将语音指令转化为设备控制命令。
 - 交互链路示例：语音指令「打开客厅灯」→ agent 调用 MQTT 工具 → MQTT 发布控制消息 → 智能家居设备执行开灯。
 
-*（内容由AI生成，仅供参考）*
