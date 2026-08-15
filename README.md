@@ -38,8 +38,6 @@ Star Trek computer/
 ├── voice_chat.py        # 桌面聊天 GUI（tkinter）+ Agent 工具集构建
 ├── web_ui.py            # Flask Web 管理界面（复用 LLMHandler）
 ├── start_all.sh         # 一键启动（语音 + Web）
-├── start_voice.sh       # 仅启动语音助手
-├── start_web.sh         # 仅启动 Web 界面
 ├── config.json          # 全局配置（模型/唤醒词/录音/记忆）
 ├── requirements.txt     # 依赖清单
 ├── templates/
@@ -221,7 +219,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 }
 ```
 
-也可通过 Web 设置界面（`http://127.0.0.1:5000`）配置。
+也可通过 Web 设置界面（`http://127.0.0.1:7689`）配置。
 
 ### 4.3 启动方式
 
@@ -238,7 +236,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 - **对话**：用自然语言下达指令，如「北京今天天气怎么样」「帮我找一下桌面上的合同」「运行 ls 命令」。
 - **打断**：按 **Cmd + Shift + M** 打断当前 AI 回复/TTS 播放（需安装 `pynput`）。
 - **对话管理**：语音说「创建对话」「切换到对话2」「列出对话」「清空对话」。
-- **Web 界面**：浏览器打开 `http://127.0.0.1:5000`，`/chat` 聊天、`/setup` 设置。
+- **Web 界面**：浏览器打开 `http://127.0.0.1:7689`，`/chat` 聊天、`/setup` 设置。
 
 ### 4.5 常用命令行参数
 
@@ -277,4 +275,49 @@ python voice_assistant.py --debug
 | 桌面 GUI | tkinter |
 | 联网搜索 | searchpin（多引擎并行 + 本地语义重排） |
 | 持久化 | JSON 文件（对话/ 目录） |
+
+---
+
+## 6. 跨平台支持
+
+本项目核心代码具备良好的跨平台基础，但仍有少量平台依赖需要改造才能完全跨平台运行。
+
+### 6.1 已跨平台的部分
+
+- **核心 Python 库均跨平台**：`sounddevice`（音频采集）、`faster-whisper`（语音识别）、`agentscope`（Agent 框架）、`flask`（Web 界面）、`edge-tts`（语音合成）、`openwakeword`（唤醒词）、`pynput`（键盘监听）均支持 Windows / macOS / Linux。
+- **路径已相对化**：项目内所有路径均使用相对路径（基于 `PROJECT_ROOT` 动态拼接），无绝对路径硬编码，跨平台迁移时无需修改路径配置。
+
+### 6.2 需改造的 3 处平台依赖
+
+| # | 平台依赖 | 现状 | 跨平台改造方案 |
+|---|---|---|---|
+| 1 | **音频播放 `afplay`** | macOS 专属命令 | Windows / Linux 需替换为 `sounddevice` 直接播放，或改用 `pygame` / `playsound` 库播放 mp3 |
+| 2 | **启动脚本 `start_all.sh`** | bash 脚本，仅限类 Unix 环境 | Windows 需提供 `.bat` 批处理脚本，或通过 Git Bash / WSL 运行 |
+| 3 | **打断快捷键 `Cmd + Shift + M`** | macOS 专属（Cmd 键） | Windows 无 Cmd 键，需改为 `Win + Shift + M` 或 `Ctrl + Shift + M` |
+
+---
+
+## 7. 未来规划：硬件徽章 + 智能家居
+
+### 7.1 最终目标
+
+将本项目从「桌面语音助手」升级为**可随身携带的星际迷航徽章（combadge）**：佩戴徽章即可在任意位置通过语音与 AI 交互，并进一步实现**家具控制**——用自然语言指令操控家中智能设备。
+
+### 7.2 硬件方案
+
+- **主控**：树莓派 Zero 2W 或 ESP32-S3（低功耗、体积小，适合佩戴）。
+- **外设**：麦克风（拾音）+ 扬声器（语音回复）+ 电池（供电）。
+- **软件**：在硬件上运行本项目完整语音链路（唤醒 → 录音 → 转录 → LLM → TTS → 播放）。
+
+### 7.3 任意位置 AI 交互
+
+- 徽章通过 **Wi-Fi 接入局域网**，用户可在任意位置通过语音直接交互。
+- 同时可通过浏览器访问 Web 界面（`http://127.0.0.1:7689`，局域网内为设备 IP:7689）进行可视化操作与配置。
+
+### 7.4 家具控制（MQTT / Home Assistant）
+
+- 通过 **MQTT / Home Assistant** 集成智能家居生态。
+- AI agent 增加 **MQTT 工具**，将语音指令转化为设备控制命令。
+- 交互链路示例：语音指令「打开客厅灯」→ agent 调用 MQTT 工具 → MQTT 发布控制消息 → 智能家居设备执行开灯。
+
 *（内容由AI生成，仅供参考）*
